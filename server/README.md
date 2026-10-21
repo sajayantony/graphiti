@@ -81,3 +81,40 @@ Only stable releases are built automatically (pre-release versions are skipped).
 6. You may access the swagger docs at `http://localhost:8000/docs`. You may also access redocs at `http://localhost:8000/redoc`.
 
 7. You may also access the neo4j browser at `http://localhost:7474` (the port depends on the neo4j instance you are using).
+
+### Local OpenAI-compatible models
+
+Set these variables on the REST API container to use a local Ollama endpoint:
+
+```dotenv
+OPENAI_API_KEY=ollama
+OPENAI_BASE_URL=http://host.containers.internal:11434/v1
+MODEL_NAME=qwen3:8b
+LLM_TEMPERATURE=0
+LLM_MAX_TOKENS=8192
+EMBEDDING_MODEL_NAME=nomic-embed-text:v1.5
+EMBEDDING_DIM=768
+GRAPHITI_TELEMETRY_ENABLED=false
+```
+
+For Docker Desktop, use `host.docker.internal` instead of `host.containers.internal`.
+For a server running directly on the host, use `localhost`.
+The custom base URL applies to extraction, embeddings, and reranking, and selects
+the OpenAI-compatible chat-completions client rather than the OpenAI Responses API.
+Reranking additionally requires support for log probabilities; ordinary REST search
+does not use the cross-encoder reranker.
+
+When sharing a database with MCP, use the same embedding model and dimensions in
+both services. Do not change them for an existing graph without regenerating its
+embeddings. Keep credentials in a private runtime `.env` file outside the checkout.
+
+To route extraction to a different OpenAI-compatible service while keeping embeddings
+local, set `EMBEDDING_BASE_URL=http://host.containers.internal:11434/v1` and
+`EMBEDDING_API_KEY=ollama`, then point `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and
+`MODEL_NAME` at the extraction service. The embedding endpoint and key independently
+fall back to their `OPENAI_*` counterparts when omitted, preserving single-provider
+deployments. Sending extraction to a hosted provider sends episode text to that provider,
+even when embeddings and graph storage stay local.
+For compatible services that reject the native Pydantic schema, set
+`LLM_STRUCTURED_OUTPUT_MODE=json_object`. This selects Graphiti's schema-in-prompt
+JSON mode; the default remains `json_schema`.
