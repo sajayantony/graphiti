@@ -1,3 +1,19 @@
+"""
+Copyright 2026, Zep Software, Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
+
 import asyncio
 from contextlib import asynccontextmanager
 from functools import partial
@@ -6,8 +22,9 @@ from fastapi import APIRouter, FastAPI, status
 from graphiti_core.nodes import EpisodeType  # type: ignore
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data  # type: ignore
 
+from graph_service.config import ZepEnvDep
 from graph_service.dto import AddEntityNodeRequest, AddMessagesRequest, Message, Result
-from graph_service.zep_graphiti import ZepGraphitiDep
+from graph_service.zep_graphiti import ZepGraphitiDep, graphiti_client
 
 
 class AsyncWorker:
@@ -51,18 +68,19 @@ router = APIRouter(lifespan=lifespan)
 @router.post('/messages', status_code=status.HTTP_202_ACCEPTED)
 async def add_messages(
     request: AddMessagesRequest,
-    graphiti: ZepGraphitiDep,
+    settings: ZepEnvDep,
 ):
     async def add_messages_task(m: Message):
-        await graphiti.add_episode(
-            uuid=m.uuid,
-            group_id=request.group_id,
-            name=m.name,
-            episode_body=f'{m.role or ""}({m.role_type}): {m.content}',
-            reference_time=m.timestamp,
-            source=EpisodeType.message,
-            source_description=m.source_description,
-        )
+        async with graphiti_client(settings) as graphiti:
+            await graphiti.add_episode(
+                uuid=m.uuid,
+                group_id=request.group_id,
+                name=m.name,
+                episode_body=f'{m.role or ""}({m.role_type}): {m.content}',
+                reference_time=m.timestamp,
+                source=EpisodeType.message,
+                source_description=m.source_description,
+            )
 
     for m in request.messages:
         await async_worker.queue.put(partial(add_messages_task, m))

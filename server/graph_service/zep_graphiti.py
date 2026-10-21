@@ -1,11 +1,37 @@
+"""
+Copyright 2026, Zep Software, Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
+
 import logging
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, HTTPException
 from graphiti_core import Graphiti  # type: ignore
+from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 from graphiti_core.edges import EntityEdge  # type: ignore
+from graphiti_core.embedder.openai import (
+    DEFAULT_EMBEDDING_MODEL,
+    OpenAIEmbedder,
+    OpenAIEmbedderConfig,
+)
 from graphiti_core.errors import EdgeNotFoundError, GroupsEdgesNotFoundError, NodeNotFoundError
 from graphiti_core.llm_client import LLMClient  # type: ignore
+from graphiti_core.llm_client.config import LLMConfig
+from graphiti_core.llm_client.openai_client import OpenAIClient
+from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.nodes import EntityNode, EpisodicNode  # type: ignore
 
 from graph_service.config import ZepEnvDep
@@ -80,6 +106,46 @@ class ZepGraphiti(Graphiti):
 
 def _create_graphiti_client(settings: ZepEnvDep) -> ZepGraphiti:
     """Create a ZepGraphiti client based on the configured database backend."""
+    llm_config = LLMConfig(
+        api_key=settings.openai_api_key,
+        base_url=settings.openai_base_url,
+        model=settings.model_name,
+        small_model=settings.model_name,
+        temperature=settings.llm_temperature,
+        max_tokens=settings.llm_max_tokens,
+    )
+    llm_client = (
+        OpenAIGenericClient(
+            config=llm_config,
+            max_tokens=settings.llm_max_tokens,
+            structured_output_mode=settings.llm_structured_output_mode,
+        )
+        if settings.openai_base_url is not None
+        else OpenAIClient(config=llm_config, max_tokens=settings.llm_max_tokens)
+    )
+    embedder = OpenAIEmbedder(
+        config=OpenAIEmbedderConfig(
+            api_key=(
+                settings.embedding_api_key
+                if settings.embedding_api_key is not None
+                else settings.openai_api_key
+            ),
+            base_url=(
+                settings.embedding_base_url
+                if settings.embedding_base_url is not None
+                else settings.openai_base_url
+            ),
+            embedding_model=settings.embedding_model_name or DEFAULT_EMBEDDING_MODEL,
+            embedding_dim=settings.embedding_dim,
+        )
+    )
+    cross_encoder = OpenAIRerankerClient(
+        config=LLMConfig(
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+            model=settings.model_name if settings.openai_base_url is not None else None,
+        )
+    )
     if settings.db_backend == 'falkordb':
         from graphiti_core.driver.falkordb_driver import FalkorDriver
 
@@ -88,7 +154,12 @@ def _create_graphiti_client(settings: ZepEnvDep) -> ZepGraphiti:
             port=settings.falkordb_port or 6379,  # type: ignore
             database=settings.falkordb_database or 'default_db',  # type: ignore
         )
-        return ZepGraphiti(graph_driver=driver)  # type: ignore
+        return ZepGraphiti(
+            graph_driver=driver,
+            llm_client=llm_client,
+            embedder=embedder,
+            cross_encoder=cross_encoder,
+        )
     else:
         # Validate Neo4j settings are present
         if not all([settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password]):
@@ -100,22 +171,24 @@ def _create_graphiti_client(settings: ZepEnvDep) -> ZepGraphiti:
             uri=settings.neo4j_uri,
             user=settings.neo4j_user,
             password=settings.neo4j_password,
+            llm_client=llm_client,
+            embedder=embedder,
+            cross_encoder=cross_encoder,
         )
 
 
-async def get_graphiti(settings: ZepEnvDep):
+@asynccontextmanager
+async def graphiti_client(settings: ZepEnvDep):
     client = _create_graphiti_client(settings)
-    if settings.openai_base_url is not None:
-        client.llm_client.config.base_url = settings.openai_base_url
-    if settings.openai_api_key is not None:
-        client.llm_client.config.api_key = settings.openai_api_key
-    if settings.model_name is not None:
-        client.llm_client.model = settings.model_name
-
     try:
         yield client
     finally:
         await client.close()
+
+
+async def get_graphiti(settings: ZepEnvDep):
+    async with graphiti_client(settings) as client:
+        yield client
 
 
 async def initialize_graphiti(settings: ZepEnvDep):
